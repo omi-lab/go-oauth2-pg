@@ -30,6 +30,8 @@ type TokenStore struct {
 // TokenStoreItem data item
 type TokenStoreItem struct {
 	ID        int64     `db:"id"`
+	ClientID  string    `db:"client_id"`
+	UserID    string    `db:"user_id"`
 	CreatedAt time.Time `db:"created_at"`
 	ExpiresAt time.Time `db:"expires_at"`
 	Code      string    `db:"code"`
@@ -86,6 +88,8 @@ func (s *TokenStore) initTable() error {
 	return s.adapter.Exec(context.Background(), fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %[1]s (
 	id         BIGSERIAL   NOT NULL,
+	client_id  TEXT 	   NOT NULL,
+	user_id    TEXT 	   NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL,
 	expires_at TIMESTAMPTZ NOT NULL,
 	code       TEXT        NOT NULL,
@@ -99,6 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_%[1]s_expires_at ON %[1]s (expires_at);
 CREATE INDEX IF NOT EXISTS idx_%[1]s_code ON %[1]s (code);
 CREATE INDEX IF NOT EXISTS idx_%[1]s_access ON %[1]s (access);
 CREATE INDEX IF NOT EXISTS idx_%[1]s_refresh ON %[1]s (refresh);
+CREATE INDEX IF NOT EXISTS idx_%[1]s_client_id_user_id ON %[1]s (client_id, user_id);
 `, s.tableName))
 }
 
@@ -137,7 +142,9 @@ func (s *TokenStore) Create(ctx context.Context, info oauth2.TokenInfo) error {
 
 	return s.adapter.Exec(
 		ctx,
-		fmt.Sprintf("INSERT INTO %s (created_at, expires_at, code, access, refresh, data) VALUES ($1, $2, $3, $4, $5, $6)", s.tableName),
+		fmt.Sprintf("INSERT INTO %s (client_id, user_id, created_at, expires_at, code, access, refresh, data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", s.tableName),
+		info.GetClientID(),
+		info.GetUserID(),
 		item.CreatedAt,
 		item.ExpiresAt,
 		item.Code,
@@ -168,6 +175,15 @@ func (s *TokenStore) RemoveByAccess(ctx context.Context, access string) error {
 // RemoveByRefresh uses the refresh token to delete the token information
 func (s *TokenStore) RemoveByRefresh(ctx context.Context, refresh string) error {
 	err := s.adapter.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE refresh = $1", s.tableName), refresh)
+	if err == pgAdapter.ErrNoRows {
+		return nil
+	}
+	return err
+}
+
+// RemoveByUserID uses the user id to delete the token information
+func (s *TokenStore) RemoveByClientIDAndUserID(ctx context.Context, clientID, userID string) error {
+	err := s.adapter.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE client_id = $1 AND user_id = $2", s.tableName), clientID, userID)
 	if err == pgAdapter.ErrNoRows {
 		return nil
 	}
@@ -216,6 +232,20 @@ func (s *TokenStore) GetByRefresh(ctx context.Context, refresh string) (oauth2.T
 
 	var item TokenStoreItem
 	if err := s.adapter.SelectOne(ctx, &item, fmt.Sprintf("SELECT * FROM %s WHERE refresh = $1", s.tableName), refresh); err != nil {
+		return nil, err
+	}
+
+	return s.toTokenInfo(item.Data)
+}
+
+// GetByUserID uses the user id for token information data
+func (s *TokenStore) GetByClientAndUserID(ctx context.Context, clientID, userID string) (oauth2.TokenInfo, error) {
+	if userID == "" {
+		return nil, nil
+	}
+
+	var item TokenStoreItem
+	if err := s.adapter.SelectOne(ctx, &item, fmt.Sprintf("SELECT * FROM %s WHERE client_id = $1 AND user_id = $2", s.tableName), clientID, userID); err != nil {
 		return nil, err
 	}
 
